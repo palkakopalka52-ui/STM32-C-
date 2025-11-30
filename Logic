@@ -1,0 +1,86 @@
+#include "main.h"
+
+// Константы делителя и диапазона батареи
+#define VREF        3.3f
+#define ADC_MAX     4095.0f
+
+#define R_TOP       51000.0f   // 51k
+#define R_BOTTOM    33000.0f   // 33k
+
+#define U_BAT_MIN   7.0f       // нижняя граница шкалы
+#define U_BAT_MAX   8.4f       // верхняя граница шкалы
+
+extern ADC_HandleTypeDef hadc1;
+
+// ADC в напряжение батареи
+static float adc_to_bat_voltage(uint16_t adc)
+{
+    float u_adc = (adc / ADC_MAX) * VREF;
+    float k_div = (R_TOP + R_BOTTOM) / R_BOTTOM;  // 84/33 ≈ 2.545
+    return u_adc * k_div;
+}
+
+// Напряжение батареи в число горящих светодиодов
+static uint8_t bat_voltage_to_level(float u_bat)
+{
+    if (u_bat <= U_BAT_MIN) return 0;
+    if (u_bat >= U_BAT_MAX) return 8;
+
+    float k = (u_bat - U_BAT_MIN) / (U_BAT_MAX - U_BAT_MIN);
+    uint8_t level = (uint8_t)(k * 8.0f + 0.5f);              
+    if (level > 8) level = 8;
+    return level;
+}
+
+// Установка состояния шкалы индикации
+static void leds_set_level(uint8_t level)
+{
+    for (uint8_t i = 0; i < 8; i++)
+    {
+        GPIO_PinState state = (i < level) ? GPIO_PIN_RESET : GPIO_PIN_SET;
+        HAL_GPIO_WritePin(GPIOB, (uint16_t)(1u << i), state);
+    }
+}
+
+// Мерцающий статусный LED на PC13
+static void status_led_toggle(void)
+{
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+}
+
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+
+    MX_GPIO_Init();
+    MX_ADC1_Init();
+
+    uint32_t tick_prev = HAL_GetTick();
+    uint32_t tick_status = HAL_GetTick();
+
+    while (1)
+    {
+        // 1. Считываем АЦП с PA0
+        HAL_ADC_Start(&hadc1);
+        HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+        uint16_t adc = HAL_ADC_GetValue(&hadc1);
+
+        // 2. Переводим в напряжение батареи
+        float u_bat = adc_to_bat_voltage(adc);
+
+        // 3. Получаем уровень 0..8 и включаем шкалу
+        uint8_t level = bat_voltage_to_level(u_bat);
+        leds_set_level(level);
+
+        // 4. Мигаем статусным светодиодом раз в 500 мс
+        uint32_t now = HAL_GetTick();
+        if (now - tick_status >= 500)
+        {
+            tick_status = now;
+            status_led_toggle();
+        }
+
+        HAL_Delay(100); // период обновления измерения ~100 мс
+    }
+}
